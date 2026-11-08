@@ -328,6 +328,7 @@ jobs:
           package com.vic.contadorgta.widget
 
           import android.content.Context
+          import android.content.Intent
           import androidx.compose.runtime.Composable
           import androidx.compose.ui.graphics.Color
           import androidx.compose.ui.unit.dp
@@ -358,6 +359,8 @@ jobs:
           class CounterWidget : GlanceAppWidget() {
 
               override suspend fun provideGlance(context: Context, id: GlanceId) {
+                  val openApp = actionStartActivity(Intent(context, MainActivity::class.java))
+
                   provideContent {
                       val t1 = CountdownLogic.targets[0]
                       val t2 = CountdownLogic.targets[1]
@@ -369,7 +372,7 @@ jobs:
                               .fillMaxSize()
                               .background(ImageProvider(R.drawable.widget_bg))
                               .padding(12.dp)
-                              .clickable(actionStartActivity<MainActivity>()),
+                              .clickable(openApp),
                           verticalAlignment = Alignment.CenterVertically,
                           horizontalAlignment = Alignment.CenterHorizontally
                       ) {
