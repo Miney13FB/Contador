@@ -110,35 +110,80 @@ jobs:
           cat > app/src/main/java/com/vic/contadorgta/CounterWidget.java <<'EOF_FILE'
           package com.vic.contadorgta;
 
+          import android.app.AlarmManager;
           import android.app.PendingIntent;
           import android.appwidget.AppWidgetManager;
           import android.appwidget.AppWidgetProvider;
+          import android.content.ComponentName;
           import android.content.Context;
           import android.content.Intent;
-          import android.os.SystemClock;
           import android.widget.RemoteViews;
 
           /**
-           * Widget con Chronometer en cuenta atrás: lo mueve el propio launcher,
-           * así que la app no necesita servicios, alarmas ni despertar el móvil.
+           * Widget que usa la misma fórmula que la app (Targets.fmt).
+           * Se refresca cada minuto con una alarma sin despertar el móvil.
            */
           public final class CounterWidget extends AppWidgetProvider {
+              private static final String TICK = "com.vic.contadorgta.TICK";
+              private static final long MINUTE = 60_000L;
+
+              @Override
+              public void onReceive(Context ctx, Intent intent) {
+                  if (TICK.equals(intent.getAction())) {
+                      final AppWidgetManager mgr = AppWidgetManager.getInstance(ctx);
+                      final int[] ids = mgr.getAppWidgetIds(new ComponentName(ctx, CounterWidget.class));
+                      if (ids.length > 0) {
+                          onUpdate(ctx, mgr, ids);
+                      } else {
+                          cancel(ctx);
+                      }
+                  } else {
+                      super.onReceive(ctx, intent);
+                  }
+              }
 
               @Override
               public void onUpdate(Context ctx, AppWidgetManager mgr, int[] ids) {
+                  final long now = System.currentTimeMillis();
                   final RemoteViews r = new RemoteViews(ctx.getPackageName(), R.layout.widget);
-                  bind(r, R.id.c1, Targets.nov(10));
-                  bind(r, R.id.c2, Targets.nov(19));
+                  r.setTextViewText(R.id.v1, text(Targets.nov(10) - now));
+                  r.setTextViewText(R.id.v2, text(Targets.nov(19) - now));
                   r.setOnClickPendingIntent(R.id.root, PendingIntent.getActivity(
                           ctx, 0, new Intent(ctx, MainActivity.class), PendingIntent.FLAG_IMMUTABLE));
                   mgr.updateAppWidget(ids, r);
+                  schedule(ctx);
               }
 
-              private static void bind(RemoteViews r, int id, long target) {
-                  final long left = target - System.currentTimeMillis();
-                  final boolean running = left > 0;
-                  r.setChronometerCountDown(id, true);
-                  r.setChronometer(id, SystemClock.elapsedRealtime() + (running ? left : 0), null, running);
+              @Override
+              public void onEnabled(Context ctx) {
+                  schedule(ctx);
+              }
+
+              @Override
+              public void onDisabled(Context ctx) {
+                  cancel(ctx);
+              }
+
+              private static String text(long ms) {
+                  final StringBuilder sb = new StringBuilder(16);
+                  Targets.fmt(sb, ms, false);
+                  return sb.toString();
+              }
+
+              private static PendingIntent tick(Context ctx) {
+                  return PendingIntent.getBroadcast(ctx, 1,
+                          new Intent(ctx, CounterWidget.class).setAction(TICK),
+                          PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+              }
+
+              private static void schedule(Context ctx) {
+                  final long now = System.currentTimeMillis();
+                  ctx.getSystemService(AlarmManager.class)
+                          .setRepeating(AlarmManager.RTC, now + MINUTE - now % MINUTE, MINUTE, tick(ctx));
+              }
+
+              private static void cancel(Context ctx) {
+                  ctx.getSystemService(AlarmManager.class).cancel(tick(ctx));
               }
           }
           EOF_FILE
@@ -229,9 +274,12 @@ jobs:
 
           import android.app.Activity;
           import android.graphics.Typeface;
+          import android.graphics.drawable.GradientDrawable;
           import android.os.Bundle;
           import android.os.Handler;
           import android.os.Looper;
+          import android.util.DisplayMetrics;
+          import android.util.TypedValue;
           import android.view.Gravity;
           import android.widget.FrameLayout;
           import android.widget.LinearLayout;
@@ -247,22 +295,25 @@ jobs:
               @Override
               protected void onCreate(Bundle b) {
                   super.onCreate(b);
-                  density = getResources().getDisplayMetrics().density;
+                  final DisplayMetrics dm = getResources().getDisplayMetrics();
+                  density = dm.density;
+
+                  // Tamaño del número: el más grande que cabe en una línea (15 caracteres)
+                  final float minDp = Math.min(dm.widthPixels, dm.heightPixels) / density;
+                  final float valueDp = Math.min(40f, (minDp - 72f) / (15f * 0.64f));
 
                   final FrameLayout root = new FrameLayout(this);
                   root.addView(new GtaView(this), new FrameLayout.LayoutParams(-1, -1));
 
                   final LinearLayout col = new LinearLayout(this);
                   col.setOrientation(LinearLayout.VERTICAL);
-                  col.setGravity(Gravity.CENTER);
+                  col.setGravity(Gravity.TOP | Gravity.CENTER_HORIZONTAL);
                   root.addView(col, new FrameLayout.LayoutParams(-1, -1));
 
-                  text(col, "10 DE NOVIEMBRE \u00b7 00:00", 13, 0xFFFFE082, false, 0);
-                  v1 = text(col, "", 30, 0xFFFFFFFF, true, 8);
-                  text(col, "19 DE NOVIEMBRE \u00b7 00:00", 13, 0xFFFFE082, false, 40);
-                  v2 = text(col, "", 30, 0xFFFFFFFF, true, 8);
+                  v1 = counter(col, "10 DE NOVIEMBRE \u00b7 00:00", 16, valueDp);
+                  v2 = counter(col, "19 DE NOVIEMBRE \u00b7 00:00", 16, valueDp);
 
-                  // Pantalla completa: respeta las barras del sistema solo para el texto
+                  // Pantalla completa: el texto respeta las barras del sistema, el fondo no
                   root.setOnApplyWindowInsetsListener((v, i) -> {
                       col.setPadding(i.getSystemWindowInsetLeft(), i.getSystemWindowInsetTop(),
                               i.getSystemWindowInsetRight(), i.getSystemWindowInsetBottom());
@@ -272,18 +323,49 @@ jobs:
                   setContentView(root);
               }
 
-              private TextView text(LinearLayout col, String s, float sp, int color, boolean mono, int topDp) {
+              /** Panel oscuro semitransparente arriba, con etiqueta y número con sombra. */
+              private TextView counter(LinearLayout col, String label, int topDp, float valueDp) {
+                  final LinearLayout panel = new LinearLayout(this);
+                  panel.setOrientation(LinearLayout.VERTICAL);
+                  panel.setGravity(Gravity.CENTER);
+                  panel.setPadding(dp(16), dp(12), dp(16), dp(14));
+
+                  final GradientDrawable bg = new GradientDrawable();
+                  bg.setColor(0xB3120620);
+                  bg.setCornerRadius(dp(18));
+                  bg.setStroke(dp(1), 0x66FFE082);
+                  panel.setBackground(bg);
+
+                  final LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(-1, -2);
+                  plp.setMargins(dp(20), dp(topDp), dp(20), 0);
+                  col.addView(panel, plp);
+
+                  final TextView l = tv(label, 14, 0xFFFFE082, false);
+                  l.setLetterSpacing(0.12f);
+                  panel.addView(l, new LinearLayout.LayoutParams(-2, -2));
+
+                  final TextView v = tv("", 14, 0xFFFFFFFF, true);
+                  v.setTextSize(TypedValue.COMPLEX_UNIT_DIP, valueDp);
+                  v.setMaxLines(1);
+                  final LinearLayout.LayoutParams vlp = new LinearLayout.LayoutParams(-2, -2);
+                  vlp.topMargin = dp(4);
+                  panel.addView(v, vlp);
+                  return v;
+              }
+
+              private TextView tv(String s, float sp, int color, boolean mono) {
                   final TextView t = new TextView(this);
                   t.setText(s);
                   t.setTextSize(sp);
                   t.setTextColor(color);
                   t.setTypeface(mono ? Typeface.MONOSPACE : Typeface.DEFAULT, Typeface.BOLD);
                   t.setGravity(Gravity.CENTER);
-                  if (!mono) t.setLetterSpacing(0.12f);
-                  final LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
-                  lp.topMargin = (int) (topDp * density);
-                  col.addView(t, lp);
+                  t.setShadowLayer(dp(3), 0, dp(1), 0xFF000000);
                   return t;
+              }
+
+              private int dp(float v) {
+                  return (int) (v * density + .5f);
               }
 
               // El reloj solo corre mientras la app está visible: en segundo plano no gasta nada.
@@ -310,21 +392,9 @@ jobs:
               }
 
               private void show(TextView v, long ms) {
-                  final long s = ms > 0 ? ms / 1000 : 0;
                   sb.setLength(0);
-                  sb.append(s / 86400).append("d ");
-                  two(s / 3600 % 24);
-                  sb.append("h ");
-                  two(s / 60 % 60);
-                  sb.append("m ");
-                  two(s % 60);
-                  sb.append('s');
+                  Targets.fmt(sb, ms, true);
                   v.setText(sb);
-              }
-
-              private void two(long n) {
-                  if (n < 10) sb.append('0');
-                  sb.append(n);
               }
           }
           EOF_FILE
@@ -343,6 +413,26 @@ jobs:
                   c.clear();
                   c.set(2026, Calendar.NOVEMBER, day, 0, 0, 0);
                   return c.getTimeInMillis();
+              }
+
+              /** Misma fórmula para app y widget, así los números siempre coinciden. */
+              static void fmt(StringBuilder sb, long ms, boolean secs) {
+                  final long s = ms > 0 ? ms / 1000 : 0;
+                  sb.append(s / 86400).append("d ");
+                  two(sb, s / 3600 % 24);
+                  sb.append("h ");
+                  two(sb, s / 60 % 60);
+                  sb.append('m');
+                  if (secs) {
+                      sb.append(' ');
+                      two(sb, s % 60);
+                      sb.append('s');
+                  }
+              }
+
+              private static void two(StringBuilder sb, long n) {
+                  if (n < 10) sb.append('0');
+                  sb.append(n);
               }
           }
           EOF_FILE
@@ -387,36 +477,56 @@ jobs:
               <TextView
                   android:layout_width="wrap_content"
                   android:layout_height="wrap_content"
+                  android:shadowColor="#000000"
+                  android:shadowDx="0"
+                  android:shadowDy="1"
+                  android:shadowRadius="4"
                   android:text="10 NOV &#183; 00:00"
                   android:textColor="#FFE082"
-                  android:textSize="11sp"
+                  android:textSize="12sp"
                   android:textStyle="bold" />
 
-              <Chronometer
-                  android:id="@+id/c1"
+              <TextView
+                  android:id="@+id/v1"
                   android:layout_width="wrap_content"
                   android:layout_height="wrap_content"
                   android:fontFamily="monospace"
+                  android:maxLines="1"
+                  android:shadowColor="#000000"
+                  android:shadowDx="0"
+                  android:shadowDy="1"
+                  android:shadowRadius="4"
+                  android:text="0d 00h 00m"
                   android:textColor="#FFFFFF"
-                  android:textSize="24sp"
+                  android:textSize="22sp"
                   android:textStyle="bold" />
 
               <TextView
                   android:layout_width="wrap_content"
                   android:layout_height="wrap_content"
                   android:layout_marginTop="10dp"
+                  android:shadowColor="#000000"
+                  android:shadowDx="0"
+                  android:shadowDy="1"
+                  android:shadowRadius="4"
                   android:text="19 NOV &#183; 00:00"
                   android:textColor="#FFE082"
-                  android:textSize="11sp"
+                  android:textSize="12sp"
                   android:textStyle="bold" />
 
-              <Chronometer
-                  android:id="@+id/c2"
+              <TextView
+                  android:id="@+id/v2"
                   android:layout_width="wrap_content"
                   android:layout_height="wrap_content"
                   android:fontFamily="monospace"
+                  android:maxLines="1"
+                  android:shadowColor="#000000"
+                  android:shadowDx="0"
+                  android:shadowDy="1"
+                  android:shadowRadius="4"
+                  android:text="0d 00h 00m"
                   android:textColor="#FFFFFF"
-                  android:textSize="24sp"
+                  android:textSize="22sp"
                   android:textStyle="bold" />
           </LinearLayout>
           EOF_FILE
@@ -479,8 +589,55 @@ jobs:
           include ':app'
           EOF_FILE
 
-      - name: Crear clave de firma
-        run: keytool -genkeypair -keystore app/release.keystore -storepass contador -keypass contador -alias contador -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Contador"
+      - name: Preparar clave de firma
+        run: |
+          base64 -d > app/release.keystore <<'EOF_KEY'
+          MIIJigIBAzCCCVAGCSqGSIb3DQEHAaCCCUEEggk9MIIJOTCCA88GCSqGSIb3DQEHBqCCA8AwggO8
+          AgEAMIIDtQYJKoZIhvcNAQcBMBwGCiqGSIb3DQEMAQMwDgQIUjz1DEbdxMYCAggAgIIDiHoyNOPY
+          hgVqjm7OUfOpw+XrbmJ7x50uuQL++aZL4LS2MfYlvptct/MWJAW/1rg/YvTOoj2LBT76oIK1yeJS
+          0XdcS0mt9Pn3Chot/s8Fy4C9W7Q8Mmg9JH81mqiE2U1sDE+TEFSS3GPkKQUyrZ4fy+EaZBkhhFgU
+          ueTZqqNCUyUtPHuIeOaYYs+XUQ+KYkHQdVrKI/fCGB3uIBjUVt4uedu5ou75KAeY7RVwQI4XejTp
+          70PDQHLi7x+hT/4zgO5Ar0uPM5gBYbmFUqY0ETt211Vvy4fUoa2m5RM/K5hVKd9OAfBhD+OHDfUR
+          sZnbDWbjfptl6PFfmijzLfX6nXlBtmUlfw3sNYRs5e6ZB4zRG3P19SxxIbYC6TNVj2okqnCV3GvG
+          iFMbCD862qHonKF6Z+MpEt/XgmtEMoeLAcw7WU+A4l0jAPmSExcJgwHCelJF6QCFIlmAW8qRoWF9
+          zbO0Ftnax3NRSjX9wppUfjifKLPIThMGis5gzwGdSHMF7nIVH6PUp10r40yHJDI+ByQTk3MGpg1d
+          Idnp3SKDOf4fpSsR40kYwER0LNH9Yj1sJioMcboZi6okaur7rmH/foKOd0Ro9Apl/iVzX/nw+mso
+          T1bqzsNIM7AhIHqa6vZ1PXpb69NmnrvT45/M6z+HwSXlcOyUWMFPZsr1qybJY3xdUxHED3iHwdzv
+          /V3tBdYO52p1OnYJ6ordYkhzHyh0z+cx2zdY8NtJnaQPL/oSFFGI12hi1HumLSQzidA+28+TfAHI
+          INdhx75nTPXnPR3jxYqbUAsnecH7hk0JRqWskIog9G/V+K3vp4En3leTN/UZdSzCAeytJaW2+K+z
+          ZxhhxVF4gQQBBRKdO098O+CgEa69xJxgdEA3jRhwMc9mrDhiI0lFUmHxxHoE9D2y/EIyq7UaWlPW
+          g13x5cDQHF4Ep0SLV3R7rzmwkDaZopBTx8JyYT0H425WZXQiB5NMk1c+Ck70G7zY2ron2isfapbv
+          rhM0oNrmhfc0g5sqUe2Cxy+ZACo59MJVAA8/cJYeSVpnT8Or/5vMH2xGOGi5TPVgOfOvWmVBNWkt
+          RKAnD9nextUjlma0pXc6dlziKqWbUrxxAfMHQ5a3Cv4uXpv782Pm4pZigwzmk7AdWe8zRA0wgBWf
+          LEOi4NdEET2WOrnEoK51Xam3OuhEp8DLTVn3hYAPq+Mkux7IJs9AZ8ywcz0wggViBgkqhkiG9w0B
+          BwGgggVTBIIFTzCCBUswggVHBgsqhkiG9w0BDAoBAqCCBO4wggTqMBwGCiqGSIb3DQEMAQMwDgQI
+          LfF1JXdXAIMCAggABIIEyAe8gwsPRHyFv6IhtsnZuX+d/RDYlBVnebS0y7a/HMURz1gVVohRSwD3
+          t/QgE8DNDXZecIptDSMGMnPc1cZ2BoevMIeP/OKXncVjd/6jQN6Puw/ytqEFpULoajC+tPEHFs75
+          bjpSZIt/VwWN63jg+S5HCxSlVXnvd293rF5iDRyV/zGKenLzL12ww9Nq/WPiL+XbnmSgboMLxfDK
+          iqwFMskz0CoyaN3VtuPEAhFyejO+0g9RCWB2OfG6WibisRsDSc7KWP2jranoWM8SGaEqLW0Oi1Y6
+          8sjpOEqfNRoaXBumrCWyloqZZnNRPwnXocAObl7TfTs0NqNvZLJOl6O56uzHkW5xDYtnJdp488lG
+          JDqN40/sNjt6cZAqfagnkO0LCGtYLheV6CIaRGg8OtU1WRfUEUqgCy9WIlil8exeeGXi0bWea0Nm
+          3xdsOs6jPWqy3UGa1HirJXm+/XGO+Lm+CoXOLFSK4Mc4Ws9rf63oHMe91ny+E8oeT20XsRHGXCQy
+          wg0NbpHtnWtbyg8oweVXBdjYLWo4yElPYgbyiSKGUZTCbWtck6biF40BXbD5ReIOev2QuzMtmNZh
+          hM6KkyxauVUYvysZAaflGsyZGkfX2LwN0xbBEGqL4vEQGdNxhqWgx1KU69DzPJlnmqEGdLlV2OGu
+          Q7C6USB30ymeXj9agqt4wcqUfPzNCjX+FDUanoDp18eKXIf7WhYnHpcn+xWpFzRpmMKCTHXTChvm
+          9phAiQ9ulKRieJr5NdYC/GV8XlubUq/I3tPCX3+ePFo+KugRUAYE7z3278dVaop8Eul+D2C1A66Z
+          zpHTUtlQ/wtaHXNkTIw7kWKY6AsYoP4pFYwCjRyCA//A21DqDC4lki/hPdOhPBlQTcviaIZiCDr5
+          ZqSLYGOhoWDI4sZZKLCjDLT3cCEd3dqIhHjS4NLAOeieSfNO8xGrQPhfOY98zuKbgeczjVxKye+p
+          PAowzvjXx4jcesnTjBfK/EP+B+/W4jItTp9rPbbZlBkMujrx0xSHvUkJOJ5a7A9CExzzSaz6qNbX
+          ZnbK3qAmLYAiPsufpqnSX43Fe9IywlrWIIMGMuUNXGCh7ip4nxupXFbNzpIisk5wvozpolsmtaoN
+          wfaZlbaWLv8zTqsXQBCa1FupnpxWIRsfbbZwFSL17Xnnh8ldhlNqNV53biODrSvfY23IA0Dkm6Bz
+          DvkrAstDavJmwW1o3LuuZ5lTAI0pSVYo9HwijdZksXf2VmjjMm2OXQdtxW5XBDN8rLDWHKpfqfjz
+          xh9C/UaDikm/bLfszDlkRwadbb93xDNmMwvf76Bzr8QiyKjWt5PtJxy9i9ULj8xLpVcm0sZpcIgO
+          4EeCCMsQ5t8Gd8Bv20yNKrbTPaKm2EF6o5V8dNpNy3GlqdNc+GGXSjO5KmtAdwny6zvi2InTvHsT
+          widtAh32N8pyW0L9QX/0giUvs2qjxtHDdhamtiz7SUNz2TvGd/Qcca957J3w/zGzCZYpzQj7J9kD
+          DthqJ+v+/Uh8HYjZcvoe+1Hqnf7mJQPSuhUF0Y7ciBtxhuyw4sO8v9RiwmvVvwTQPwG/lP79chTO
+          TITlwFFqSI3owuL041Ry0C5F1YT1NLe4mCwQTzdsOpxlbGjp3O8EyCIBNjFGMB8GCSqGSIb3DQEJ
+          FDESHhAAYwBvAG4AdABhAGQAbwByMCMGCSqGSIb3DQEJFTEWBBTWc3anpuPdSUZYw4s48QLAq713
+          RDAxMCEwCQYFKw4DAhoFAAQUIX7nFsQdhhjmRo2zGk2+qIqNL8EECL3QbmQ6K1vbAgIIAA==
+          EOF_KEY
+          # Si la clave incluida no se pudiera leer, se genera una nueva
+          keytool -list -keystore app/release.keystore -storepass contador > /dev/null 2>&1 || { rm -f app/release.keystore; keytool -genkeypair -keystore app/release.keystore -storepass contador -keypass contador -alias contador -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Contador"; }
 
       - uses: gradle/actions/setup-gradle@v4
         with:
