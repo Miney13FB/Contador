@@ -9,61 +9,68 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
 
       - name: Crear proyecto Android
         run: |
           mkdir -p app
-          cat > app/build.gradle.kts <<'EOF_FILE'
+          cat > app/build.gradle <<'EOF_FILE'
           plugins {
-              alias(libs.plugins.android.application)
-              alias(libs.plugins.kotlin.android)
-              alias(libs.plugins.kotlin.compose)
+              id 'com.android.application'
           }
 
           android {
-              namespace = "com.vic.contadorgta"
-              compileSdk = 36
+              namespace 'com.vic.contadorgta'
+              compileSdk 36
 
               defaultConfig {
-                  applicationId = "com.vic.contadorgta"
-                  minSdk = 26
-                  targetSdk = 36
-                  versionCode = 1
-                  versionName = "1.0"
+                  applicationId 'com.vic.contadorgta'
+                  minSdk 26
+                  targetSdk 36
+                  versionCode 1
+                  versionName '1.0'
+              }
+
+              signingConfigs {
+                  release {
+                      storeFile file('release.keystore')
+                      storePassword 'contador'
+                      keyAlias 'contador'
+                      keyPassword 'contador'
+                  }
               }
 
               buildTypes {
                   release {
-                      isMinifyEnabled = true
-                      isShrinkResources = true
-                      proguardFiles(
-                          getDefaultProguardFile("proguard-android-optimize.txt"),
-                          "proguard-rules.pro"
-                      )
+                      minifyEnabled true
+                      shrinkResources true
+                      signingConfig signingConfigs.release
+                      proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
                   }
               }
 
               compileOptions {
-                  sourceCompatibility = JavaVersion.VERSION_17
-                  targetCompatibility = JavaVersion.VERSION_17
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
               }
-              kotlinOptions { jvmTarget = "17" }
-              buildFeatures { compose = true }
-          }
 
-          dependencies {
-              implementation(libs.androidx.core.ktx)
-              implementation(libs.androidx.activity.compose)
-              implementation(platform(libs.compose.bom))
-              implementation(libs.compose.ui)
-              implementation(libs.compose.material3)
-              implementation(libs.glance.appwidget)
+              dependenciesInfo {
+                  includeInApk false
+                  includeInBundle false
+              }
+
+              lint {
+                  checkReleaseBuilds false
+                  abortOnError false
+              }
           }
           EOF_FILE
           mkdir -p app
           cat > app/proguard-rules.pro <<'EOF_FILE'
-          # Sin reglas extra necesarias.
+          # Sin reglas extra: el manifiesto ya conserva actividad y widget.
           EOF_FILE
           mkdir -p app/src/main
           cat > app/src/main/AndroidManifest.xml <<'EOF_FILE'
@@ -71,16 +78,15 @@ jobs:
           <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
               <application
-                  android:allowBackup="true"
+                  android:allowBackup="false"
                   android:icon="@mipmap/ic_launcher"
-                  android:label="@string/app_name"
-                  android:supportsRtl="true"
-                  android:theme="@style/Theme.ContadorGTA">
+                  android:label="Contador GTA"
+                  android:theme="@style/T">
 
                   <activity
                       android:name=".MainActivity"
-                      android:exported="true"
-                      android:theme="@style/Theme.ContadorGTA">
+                      android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|density|uiMode"
+                      android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
                           <category android:name="android.intent.category.LAUNCHER" />
@@ -88,351 +94,269 @@ jobs:
                   </activity>
 
                   <receiver
-                      android:name=".widget.CounterWidgetReceiver"
+                      android:name=".CounterWidget"
                       android:exported="true">
                       <intent-filter>
                           <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
                       </intent-filter>
                       <meta-data
                           android:name="android.appwidget.provider"
-                          android:resource="@xml/counter_widget_info" />
+                          android:resource="@xml/widget_info" />
                   </receiver>
               </application>
           </manifest>
           EOF_FILE
           mkdir -p app/src/main/java/com/vic/contadorgta
-          cat > app/src/main/java/com/vic/contadorgta/CountdownLogic.kt <<'EOF_FILE'
-          package com.vic.contadorgta
+          cat > app/src/main/java/com/vic/contadorgta/CounterWidget.java <<'EOF_FILE'
+          package com.vic.contadorgta;
 
-          import java.time.Duration
-          import java.time.LocalDateTime
-          import java.time.ZoneId
-          import java.time.ZonedDateTime
+          import android.app.PendingIntent;
+          import android.appwidget.AppWidgetManager;
+          import android.appwidget.AppWidgetProvider;
+          import android.content.Context;
+          import android.content.Intent;
+          import android.os.SystemClock;
+          import android.widget.RemoteViews;
 
-          data class Target(val label: String, val dateTime: LocalDateTime)
+          /**
+           * Widget con Chronometer en cuenta atrás: lo mueve el propio launcher,
+           * así que la app no necesita servicios, alarmas ni despertar el móvil.
+           */
+          public final class CounterWidget extends AppWidgetProvider {
 
-          object CountdownLogic {
-
-              val targets = listOf(
-                  Target("10 de noviembre · 00:00", LocalDateTime.of(2026, 11, 10, 0, 0)),
-                  Target("19 de noviembre · 00:00", LocalDateTime.of(2026, 11, 19, 0, 0))
-              )
-
-              /** Tiempo restante en la zona horaria actual del móvil. Nunca negativo. */
-              fun remaining(target: Target, now: ZonedDateTime = ZonedDateTime.now()): Duration {
-                  val end = target.dateTime.atZone(ZoneId.systemDefault())
-                  val d = Duration.between(now, end)
-                  return if (d.isNegative) Duration.ZERO else d
+              @Override
+              public void onUpdate(Context ctx, AppWidgetManager mgr, int[] ids) {
+                  final RemoteViews r = new RemoteViews(ctx.getPackageName(), R.layout.widget);
+                  bind(r, R.id.c1, Targets.nov(10));
+                  bind(r, R.id.c2, Targets.nov(19));
+                  r.setOnClickPendingIntent(R.id.root, PendingIntent.getActivity(
+                          ctx, 0, new Intent(ctx, MainActivity.class), PendingIntent.FLAG_IMMUTABLE));
+                  mgr.updateAppWidget(ids, r);
               }
 
-              fun format(d: Duration): String {
-                  val days = d.toDays()
-                  val h = d.toHours() % 24
-                  val m = d.toMinutes() % 60
-                  val s = d.seconds % 60
-                  return "%dd %02dh %02dm %02ds".format(days, h, m, s)
-              }
-
-              fun formatShort(d: Duration): String {
-                  val days = d.toDays()
-                  val h = d.toHours() % 24
-                  val m = d.toMinutes() % 60
-                  return "%dd %02dh %02dm".format(days, h, m)
+              private static void bind(RemoteViews r, int id, long target) {
+                  final long left = target - System.currentTimeMillis();
+                  final boolean running = left > 0;
+                  r.setChronometerCountDown(id, true);
+                  r.setChronometer(id, SystemClock.elapsedRealtime() + (running ? left : 0), null, running);
               }
           }
           EOF_FILE
           mkdir -p app/src/main/java/com/vic/contadorgta
-          cat > app/src/main/java/com/vic/contadorgta/GtaBackground.kt <<'EOF_FILE'
-          package com.vic.contadorgta
+          cat > app/src/main/java/com/vic/contadorgta/GtaView.java <<'EOF_FILE'
+          package com.vic.contadorgta;
 
-          import androidx.compose.foundation.Canvas
-          import androidx.compose.foundation.layout.fillMaxSize
-          import androidx.compose.runtime.Composable
-          import androidx.compose.ui.Modifier
-          import androidx.compose.ui.geometry.Offset
-          import androidx.compose.ui.geometry.Size
-          import androidx.compose.ui.graphics.Brush
-          import androidx.compose.ui.graphics.Color
-          import androidx.compose.ui.graphics.Path
-          import androidx.compose.ui.graphics.drawscope.DrawScope
-          import androidx.compose.ui.graphics.drawscope.Stroke
+          import android.content.Context;
+          import android.graphics.Canvas;
+          import android.graphics.LinearGradient;
+          import android.graphics.Paint;
+          import android.graphics.Path;
+          import android.graphics.Shader;
+          import android.view.View;
 
-          @Composable
-          fun GtaBackground(modifier: Modifier = Modifier.fillMaxSize()) {
-              Canvas(modifier = modifier) {
-                  val w = size.width
-                  val h = size.height
+          /** Fondo estilo atardecer GTA, dibujado por código: cero imágenes, casi cero memoria. */
+          final class GtaView extends View {
+              private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+              private final Path path = new Path();
+
+              GtaView(Context c) {
+                  super(c);
+              }
+
+              @Override
+              protected void onDraw(Canvas c) {
+                  final float w = getWidth();
+                  final float h = getHeight();
+                  p.setStyle(Paint.Style.FILL);
 
                   // Cielo
-                  drawRect(
-                      brush = Brush.verticalGradient(
-                          0f to Color(0xFF1A0B2E),
-                          0.45f to Color(0xFF7B1FA2),
-                          0.70f to Color(0xFFE91E63),
-                          1f to Color(0xFFFF8A3D)
-                      )
-                  )
+                  p.setShader(new LinearGradient(0, 0, 0, h,
+                          new int[]{0xFF1A0B2E, 0xFF7B1FA2, 0xFFE91E63, 0xFFFF8A3D},
+                          new float[]{0f, .45f, .70f, 1f}, Shader.TileMode.CLAMP));
+                  c.drawRect(0, 0, w, h, p);
 
                   // Sol
-                  drawCircle(
-                      brush = Brush.verticalGradient(
-                          listOf(Color(0xFFFFE082), Color(0xFFFF6F61)),
-                          startY = h * 0.50f, endY = h * 0.74f
-                      ),
-                      radius = w * 0.26f,
-                      center = Offset(w / 2f, h * 0.62f)
-                  )
+                  p.setShader(new LinearGradient(0, h * .50f, 0, h * .74f,
+                          0xFFFFE082, 0xFFFF6F61, Shader.TileMode.CLAMP));
+                  c.drawCircle(w / 2f, h * .62f, w * .26f, p);
+                  p.setShader(null);
 
                   // Suelo oscuro
-                  drawRect(
-                      color = Color(0xFF12061F),
-                      topLeft = Offset(0f, h * 0.76f),
-                      size = Size(w, h * 0.24f)
-                  )
+                  p.setColor(0xFF12061F);
+                  c.drawRect(0, h * .76f, w, h, p);
 
-                  // Líneas de reflejo
-                  for (i in 0..5) {
-                      val y = h * (0.78f + i * 0.035f)
-                      drawLine(
-                          color = Color(0x55FF8A3D),
-                          start = Offset(w * (0.30f - i * 0.02f), y),
-                          end = Offset(w * (0.70f + i * 0.02f), y),
-                          strokeWidth = 3f
-                      )
+                  // Reflejos
+                  p.setColor(0x55FF8A3D);
+                  p.setStrokeWidth(3f);
+                  for (int i = 0; i < 6; i++) {
+                      final float y = h * (.78f + i * .035f);
+                      c.drawLine(w * (.30f - i * .02f), y, w * (.70f + i * .02f), y, p);
                   }
 
                   // Palmeras
-                  palm(w * 0.12f, h * 0.80f, h * 0.30f)
-                  palm(w * 0.90f, h * 0.80f, h * 0.24f)
+                  palm(c, w * .12f, h * .80f, h * .30f);
+                  palm(c, w * .90f, h * .80f, h * .24f);
               }
-          }
 
-          private fun DrawScope.palm(baseX: Float, baseY: Float, height: Float) {
-              val dark = Color(0xFF0B0314)
-              val topX = baseX + height * 0.08f
-              val topY = baseY - height
+              private void palm(Canvas c, float bx, float by, float ht) {
+                  final float tx = bx + ht * .08f;
+                  final float ty = by - ht;
+                  final float len = ht * .45f;
 
-              drawLine(dark, Offset(baseX, baseY), Offset(topX, topY), strokeWidth = height * 0.04f)
+                  p.setColor(0xFF0B0314);
+                  p.setStyle(Paint.Style.STROKE);
+                  p.setStrokeWidth(ht * .04f);
+                  c.drawLine(bx, by, tx, ty, p);
 
-              val leafLen = height * 0.45f
-              val angles = listOf(-160f, -125f, -90f, -55f, -20f)
-              angles.forEach { deg ->
-                  val rad = Math.toRadians(deg.toDouble())
-                  val endX = topX + (leafLen * Math.cos(rad)).toFloat()
-                  val endY = topY + (leafLen * Math.sin(rad)).toFloat() + leafLen * 0.35f
-                  val ctrlX = topX + (leafLen * 0.5f * Math.cos(rad)).toFloat()
-                  val ctrlY = topY + (leafLen * 0.5f * Math.sin(rad)).toFloat() - leafLen * 0.25f
-                  val p = Path().apply {
-                      moveTo(topX, topY)
-                      quadraticBezierTo(ctrlX, ctrlY, endX, endY)
+                  p.setStrokeWidth(ht * .035f);
+                  for (int deg = -160; deg <= -20; deg += 35) {
+                      final double a = Math.toRadians(deg);
+                      final float cos = (float) Math.cos(a);
+                      final float sin = (float) Math.sin(a);
+                      path.rewind();
+                      path.moveTo(tx, ty);
+                      path.quadTo(tx + len * .5f * cos, ty + len * .5f * sin - len * .25f,
+                              tx + len * cos, ty + len * sin + len * .35f);
+                      c.drawPath(path, p);
                   }
-                  drawPath(p, dark, style = Stroke(width = height * 0.035f))
+                  p.setStyle(Paint.Style.FILL);
               }
           }
           EOF_FILE
           mkdir -p app/src/main/java/com/vic/contadorgta
-          cat > app/src/main/java/com/vic/contadorgta/MainActivity.kt <<'EOF_FILE'
-          package com.vic.contadorgta
+          cat > app/src/main/java/com/vic/contadorgta/MainActivity.java <<'EOF_FILE'
+          package com.vic.contadorgta;
 
-          import android.os.Bundle
-          import androidx.activity.ComponentActivity
-          import androidx.activity.compose.setContent
-          import androidx.activity.enableEdgeToEdge
-          import androidx.compose.foundation.layout.Arrangement
-          import androidx.compose.foundation.layout.Box
-          import androidx.compose.foundation.layout.Column
-          import androidx.compose.foundation.layout.Spacer
-          import androidx.compose.foundation.layout.fillMaxSize
-          import androidx.compose.foundation.layout.height
-          import androidx.compose.foundation.layout.padding
-          import androidx.compose.foundation.layout.safeDrawingPadding
-          import androidx.compose.material3.Text
-          import androidx.compose.runtime.Composable
-          import androidx.compose.runtime.LaunchedEffect
-          import androidx.compose.runtime.getValue
-          import androidx.compose.runtime.mutableStateOf
-          import androidx.compose.runtime.remember
-          import androidx.compose.runtime.setValue
-          import androidx.compose.ui.Alignment
-          import androidx.compose.ui.Modifier
-          import androidx.compose.ui.graphics.Color
-          import androidx.compose.ui.text.font.FontFamily
-          import androidx.compose.ui.text.font.FontWeight
-          import androidx.compose.ui.text.style.TextAlign
-          import androidx.compose.ui.unit.dp
-          import androidx.compose.ui.unit.sp
-          import kotlinx.coroutines.delay
-          import java.time.ZonedDateTime
+          import android.app.Activity;
+          import android.graphics.Typeface;
+          import android.os.Bundle;
+          import android.os.Handler;
+          import android.os.Looper;
+          import android.view.Gravity;
+          import android.widget.FrameLayout;
+          import android.widget.LinearLayout;
+          import android.widget.TextView;
 
-          class MainActivity : ComponentActivity() {
-              override fun onCreate(savedInstanceState: Bundle?) {
-                  super.onCreate(savedInstanceState)
-                  enableEdgeToEdge()
-                  setContent { CountdownScreen() }
-              }
-          }
+          public final class MainActivity extends Activity implements Runnable {
+              private final Handler handler = new Handler(Looper.getMainLooper());
+              private final StringBuilder sb = new StringBuilder(24);
+              private float density;
+              private TextView v1, v2;
+              private long t1, t2;
 
-          @Composable
-          fun CountdownScreen() {
-              var now by remember { mutableStateOf(ZonedDateTime.now()) }
+              @Override
+              protected void onCreate(Bundle b) {
+                  super.onCreate(b);
+                  density = getResources().getDisplayMetrics().density;
 
-              LaunchedEffect(Unit) {
-                  while (true) {
-                      now = ZonedDateTime.now()
-                      delay(1000L - (System.currentTimeMillis() % 1000L))
-                  }
+                  final FrameLayout root = new FrameLayout(this);
+                  root.addView(new GtaView(this), new FrameLayout.LayoutParams(-1, -1));
+
+                  final LinearLayout col = new LinearLayout(this);
+                  col.setOrientation(LinearLayout.VERTICAL);
+                  col.setGravity(Gravity.CENTER);
+                  root.addView(col, new FrameLayout.LayoutParams(-1, -1));
+
+                  text(col, "10 DE NOVIEMBRE \u00b7 00:00", 13, 0xFFFFE082, false, 0);
+                  v1 = text(col, "", 30, 0xFFFFFFFF, true, 8);
+                  text(col, "19 DE NOVIEMBRE \u00b7 00:00", 13, 0xFFFFE082, false, 40);
+                  v2 = text(col, "", 30, 0xFFFFFFFF, true, 8);
+
+                  // Pantalla completa: respeta las barras del sistema solo para el texto
+                  root.setOnApplyWindowInsetsListener((v, i) -> {
+                      col.setPadding(i.getSystemWindowInsetLeft(), i.getSystemWindowInsetTop(),
+                              i.getSystemWindowInsetRight(), i.getSystemWindowInsetBottom());
+                      return i;
+                  });
+
+                  setContentView(root);
               }
 
-              Box(Modifier.fillMaxSize()) {
-                  GtaBackground()
-                  Column(
-                      modifier = Modifier
-                          .fillMaxSize()
-                          .safeDrawingPadding()
-                          .padding(24.dp),
-                      verticalArrangement = Arrangement.Center,
-                      horizontalAlignment = Alignment.CenterHorizontally
-                  ) {
-                      CounterBlock(CountdownLogic.targets[0], now)
-                      Spacer(Modifier.height(40.dp))
-                      CounterBlock(CountdownLogic.targets[1], now)
-                  }
+              private TextView text(LinearLayout col, String s, float sp, int color, boolean mono, int topDp) {
+                  final TextView t = new TextView(this);
+                  t.setText(s);
+                  t.setTextSize(sp);
+                  t.setTextColor(color);
+                  t.setTypeface(mono ? Typeface.MONOSPACE : Typeface.DEFAULT, Typeface.BOLD);
+                  t.setGravity(Gravity.CENTER);
+                  if (!mono) t.setLetterSpacing(0.12f);
+                  final LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
+                  lp.topMargin = (int) (topDp * density);
+                  col.addView(t, lp);
+                  return t;
               }
-          }
 
-          @Composable
-          fun CounterBlock(target: Target, now: ZonedDateTime) {
-              val remaining = CountdownLogic.remaining(target, now)
-              Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                  Text(
-                      text = target.label.uppercase(),
-                      color = Color(0xFFFFE082),
-                      fontSize = 14.sp,
-                      fontWeight = FontWeight.Bold,
-                      letterSpacing = 3.sp
-                  )
-                  Spacer(Modifier.height(8.dp))
-                  Text(
-                      text = CountdownLogic.format(remaining),
-                      color = Color.White,
-                      fontSize = 34.sp,
-                      fontWeight = FontWeight.Black,
-                      fontFamily = FontFamily.Monospace,
-                      textAlign = TextAlign.Center
-                  )
+              // El reloj solo corre mientras la app está visible: en segundo plano no gasta nada.
+              @Override
+              protected void onResume() {
+                  super.onResume();
+                  t1 = Targets.nov(10);
+                  t2 = Targets.nov(19);
+                  run();
+              }
+
+              @Override
+              protected void onPause() {
+                  handler.removeCallbacks(this);
+                  super.onPause();
+              }
+
+              @Override
+              public void run() {
+                  final long now = System.currentTimeMillis();
+                  show(v1, t1 - now);
+                  show(v2, t2 - now);
+                  handler.postDelayed(this, 1000 - now % 1000);
+              }
+
+              private void show(TextView v, long ms) {
+                  final long s = ms > 0 ? ms / 1000 : 0;
+                  sb.setLength(0);
+                  sb.append(s / 86400).append("d ");
+                  two(s / 3600 % 24);
+                  sb.append("h ");
+                  two(s / 60 % 60);
+                  sb.append("m ");
+                  two(s % 60);
+                  sb.append('s');
+                  v.setText(sb);
+              }
+
+              private void two(long n) {
+                  if (n < 10) sb.append('0');
+                  sb.append(n);
               }
           }
           EOF_FILE
-          mkdir -p app/src/main/java/com/vic/contadorgta/widget
-          cat > app/src/main/java/com/vic/contadorgta/widget/CounterWidget.kt <<'EOF_FILE'
-          package com.vic.contadorgta.widget
+          mkdir -p app/src/main/java/com/vic/contadorgta
+          cat > app/src/main/java/com/vic/contadorgta/Targets.java <<'EOF_FILE'
+          package com.vic.contadorgta;
 
-          import android.content.Context
-          import android.content.Intent
-          import androidx.compose.runtime.Composable
-          import androidx.compose.ui.graphics.Color
-          import androidx.compose.ui.unit.dp
-          import androidx.compose.ui.unit.sp
-          import androidx.glance.GlanceId
-          import androidx.glance.GlanceModifier
-          import androidx.glance.ImageProvider
-          import androidx.glance.action.clickable
-          import androidx.glance.appwidget.GlanceAppWidget
-          import androidx.glance.appwidget.action.actionStartActivity
-          import androidx.glance.appwidget.provideContent
-          import androidx.glance.background
-          import androidx.glance.layout.Alignment
-          import androidx.glance.layout.Column
-          import androidx.glance.layout.Spacer
-          import androidx.glance.layout.fillMaxSize
-          import androidx.glance.layout.height
-          import androidx.glance.layout.padding
-          import androidx.glance.text.FontWeight
-          import androidx.glance.text.Text
-          import androidx.glance.text.TextAlign
-          import androidx.glance.text.TextStyle
-          import androidx.glance.unit.ColorProvider
-          import com.vic.contadorgta.CountdownLogic
-          import com.vic.contadorgta.MainActivity
-          import com.vic.contadorgta.R
+          import java.util.Calendar;
 
-          class CounterWidget : GlanceAppWidget() {
+          final class Targets {
+              private Targets() {}
 
-              override suspend fun provideGlance(context: Context, id: GlanceId) {
-                  val openApp = actionStartActivity(Intent(context, MainActivity::class.java))
-
-                  provideContent {
-                      val t1 = CountdownLogic.targets[0]
-                      val t2 = CountdownLogic.targets[1]
-                      val r1 = CountdownLogic.formatShort(CountdownLogic.remaining(t1))
-                      val r2 = CountdownLogic.formatShort(CountdownLogic.remaining(t2))
-
-                      Column(
-                          modifier = GlanceModifier
-                              .fillMaxSize()
-                              .background(ImageProvider(R.drawable.widget_bg))
-                              .padding(12.dp)
-                              .clickable(openApp),
-                          verticalAlignment = Alignment.CenterVertically,
-                          horizontalAlignment = Alignment.CenterHorizontally
-                      ) {
-                          Label(t1.label)
-                          Value(r1)
-                          Spacer(GlanceModifier.height(10.dp))
-                          Label(t2.label)
-                          Value(r2)
-                      }
-                  }
+              /** 00:00 del día indicado de noviembre de 2026, en la zona horaria del móvil. */
+              static long nov(int day) {
+                  Calendar c = Calendar.getInstance();
+                  c.clear();
+                  c.set(2026, Calendar.NOVEMBER, day, 0, 0, 0);
+                  return c.getTimeInMillis();
               }
-          }
-
-          @Composable
-          private fun Label(text: String) {
-              Text(
-                  text = text.uppercase(),
-                  style = TextStyle(
-                      color = ColorProvider(Color(0xFFFFE082)),
-                      fontSize = 10.sp,
-                      fontWeight = FontWeight.Bold,
-                      textAlign = TextAlign.Center
-                  )
-              )
-          }
-
-          @Composable
-          private fun Value(text: String) {
-              Text(
-                  text = text,
-                  style = TextStyle(
-                      color = ColorProvider(Color.White),
-                      fontSize = 22.sp,
-                      fontWeight = FontWeight.Bold,
-                      textAlign = TextAlign.Center
-                  )
-              )
-          }
-          EOF_FILE
-          mkdir -p app/src/main/java/com/vic/contadorgta/widget
-          cat > app/src/main/java/com/vic/contadorgta/widget/CounterWidgetReceiver.kt <<'EOF_FILE'
-          package com.vic.contadorgta.widget
-
-          import androidx.glance.appwidget.GlanceAppWidget
-          import androidx.glance.appwidget.GlanceAppWidgetReceiver
-
-          class CounterWidgetReceiver : GlanceAppWidgetReceiver() {
-              override val glanceAppWidget: GlanceAppWidget = CounterWidget()
           }
           EOF_FILE
           mkdir -p app/src/main/res/drawable
-          cat > app/src/main/res/drawable/ic_launcher_foreground.xml <<'EOF_FILE'
+          cat > app/src/main/res/drawable/ic_fg.xml <<'EOF_FILE'
           <?xml version="1.0" encoding="utf-8"?>
           <vector xmlns:android="http://schemas.android.com/apk/res/android"
               android:width="108dp"
               android:height="108dp"
               android:viewportWidth="108"
               android:viewportHeight="108">
-              <path android:fillColor="#FFFFFF"
-                  android:pathData="M54,30m-16,0a16,16 0,1 1,32 0a16,16 0,1 1,-32 0M50,48h8v28h-8z" />
+              <path
+                  android:fillColor="#FF8A3D"
+                  android:pathData="M54,54m-24,0a24,24 0,1 1,48 0a24,24 0,1 1,-48 0" />
           </vector>
           EOF_FILE
           mkdir -p app/src/main/res/drawable
@@ -448,25 +372,66 @@ jobs:
               <corners android:radius="20dp" />
           </shape>
           EOF_FILE
+          mkdir -p app/src/main/res/layout
+          cat > app/src/main/res/layout/widget.xml <<'EOF_FILE'
+          <?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:id="@+id/root"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:background="@drawable/widget_bg"
+              android:gravity="center"
+              android:orientation="vertical"
+              android:padding="12dp">
+
+              <TextView
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:text="10 NOV &#183; 00:00"
+                  android:textColor="#FFE082"
+                  android:textSize="11sp"
+                  android:textStyle="bold" />
+
+              <Chronometer
+                  android:id="@+id/c1"
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:fontFamily="monospace"
+                  android:textColor="#FFFFFF"
+                  android:textSize="24sp"
+                  android:textStyle="bold" />
+
+              <TextView
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:layout_marginTop="10dp"
+                  android:text="19 NOV &#183; 00:00"
+                  android:textColor="#FFE082"
+                  android:textSize="11sp"
+                  android:textStyle="bold" />
+
+              <Chronometer
+                  android:id="@+id/c2"
+                  android:layout_width="wrap_content"
+                  android:layout_height="wrap_content"
+                  android:fontFamily="monospace"
+                  android:textColor="#FFFFFF"
+                  android:textSize="24sp"
+                  android:textStyle="bold" />
+          </LinearLayout>
+          EOF_FILE
           mkdir -p app/src/main/res/mipmap-anydpi-v26
           cat > app/src/main/res/mipmap-anydpi-v26/ic_launcher.xml <<'EOF_FILE'
           <?xml version="1.0" encoding="utf-8"?>
           <adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
               <background android:drawable="@android:color/black" />
-              <foreground android:drawable="@drawable/ic_launcher_foreground" />
+              <foreground android:drawable="@drawable/ic_fg" />
           </adaptive-icon>
           EOF_FILE
           mkdir -p app/src/main/res/values
-          cat > app/src/main/res/values/strings.xml <<'EOF_FILE'
+          cat > app/src/main/res/values/styles.xml <<'EOF_FILE'
           <resources>
-              <string name="app_name">Contador GTA</string>
-              <string name="widget_desc">Cuenta atrás del 10 y el 19 de noviembre</string>
-          </resources>
-          EOF_FILE
-          mkdir -p app/src/main/res/values
-          cat > app/src/main/res/values/themes.xml <<'EOF_FILE'
-          <resources>
-              <style name="Theme.ContadorGTA" parent="android:Theme.Material.NoActionBar">
+              <style name="T" parent="android:Theme.Material.NoActionBar">
                   <item name="android:windowBackground">#1A0B2E</item>
                   <item name="android:statusBarColor">@android:color/transparent</item>
                   <item name="android:navigationBarColor">@android:color/transparent</item>
@@ -474,7 +439,7 @@ jobs:
           </resources>
           EOF_FILE
           mkdir -p app/src/main/res/xml
-          cat > app/src/main/res/xml/counter_widget_info.xml <<'EOF_FILE'
+          cat > app/src/main/res/xml/widget_info.xml <<'EOF_FILE'
           <?xml version="1.0" encoding="utf-8"?>
           <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
               android:minWidth="180dp"
@@ -484,46 +449,18 @@ jobs:
               android:updatePeriodMillis="1800000"
               android:resizeMode="horizontal|vertical"
               android:widgetCategory="home_screen"
-              android:description="@string/widget_desc"
-              android:initialLayout="@layout/glance_default_loading_layout" />
+              android:initialLayout="@layout/widget" />
           EOF_FILE
-          cat > build.gradle.kts <<'EOF_FILE'
+          cat > build.gradle <<'EOF_FILE'
           plugins {
-              alias(libs.plugins.android.application) apply false
-              alias(libs.plugins.kotlin.android) apply false
-              alias(libs.plugins.kotlin.compose) apply false
+              id 'com.android.application' version '8.9.1' apply false
           }
           EOF_FILE
           cat > gradle.properties <<'EOF_FILE'
-          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
-          android.useAndroidX=true
-          kotlin.code.style=official
+          org.gradle.jvmargs=-Xmx1536m -Dfile.encoding=UTF-8
           android.nonTransitiveRClass=true
           EOF_FILE
-          mkdir -p gradle
-          cat > gradle/libs.versions.toml <<'EOF_FILE'
-          [versions]
-          agp = "8.9.1"
-          kotlin = "2.0.21"
-          coreKtx = "1.15.0"
-          activityCompose = "1.9.3"
-          composeBom = "2024.12.01"
-          glance = "1.1.1"
-
-          [libraries]
-          androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
-          androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
-          compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
-          compose-ui = { group = "androidx.compose.ui", name = "ui" }
-          compose-material3 = { group = "androidx.compose.material3", name = "material3" }
-          glance-appwidget = { group = "androidx.glance", name = "glance-appwidget", version.ref = "glance" }
-
-          [plugins]
-          android-application = { id = "com.android.application", version.ref = "agp" }
-          kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
-          kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
-          EOF_FILE
-          cat > settings.gradle.kts <<'EOF_FILE'
+          cat > settings.gradle <<'EOF_FILE'
           pluginManagement {
               repositories {
                   google()
@@ -539,23 +476,24 @@ jobs:
               }
           }
           rootProject.name = "ContadorGTA"
-          include(":app")
+          include ':app'
           EOF_FILE
 
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: 17
+      - name: Crear clave de firma
+        run: keytool -genkeypair -keystore app/release.keystore -storepass contador -keypass contador -alias contador -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Contador"
 
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.11.1
 
-      - name: Compilar APK
-        run: gradle assembleDebug --no-daemon
+      - name: Compilar APK release
+        run: gradle assembleRelease --no-daemon
+
+      - name: Tamaño del APK
+        run: ls -l app/build/outputs/apk/release/
 
       - name: Subir APK
         uses: actions/upload-artifact@v4
         with:
-          name: ContadorGTA-debug
-          path: app/build/outputs/apk/debug/*.apk
+          name: ContadorGTA-release
+          path: app/build/outputs/apk/release/app-release.apk
